@@ -1,9 +1,13 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.arima.model import ARIMA
 
-st.set_page_config(layout='wide')
+# Set page to wide mode
+st.set_page_config(layout="wide")
 
 # Load and preprocess the data
 @st.cache_data
@@ -17,10 +21,10 @@ def load_data():
 df = load_data()
 
 # Streamlit app
-st.title('Advertising Campaign Analysis Dashboard')
+st.title('Enhanced Advertising Campaign Analysis Dashboard')
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(["Tier 4 Analysis", "Tier 5 Analysis", "Time Series Analysis"])
+tab1, tab2, tab3, tab4 = st.tabs(["Tier 4 Analysis", "Tier 5 Analysis", "Time Series Analysis", "Insights & Recommendations"])
 
 # Function to create campaign analysis
 def campaign_analysis(df, tier_column):
@@ -47,46 +51,41 @@ def campaign_analysis(df, tier_column):
         'ROAS': '{:,.2f}',
         'CPA': '${:,.2f}',
         'Revenue': '${:,.2f}'
-    }),use_container_width=True)
+    }), use_container_width=True)
 
     # Visualizations
     st.subheader('Campaign Visualizations')
 
-    
-    col1, col2 = st.columns(2)
-    with col1:
+    # Scatter plot of Spend vs Conversions
+    fig = px.scatter(campaign_data.dropna(subset=['ROAS']), x='Spend', y='RB Conv', size='ROAS', color='ROAS',
+                     hover_name=tier_column, log_x=True, size_max=60,
+                     labels={'Spend': 'Total Spend ($)', 'RB Conv': 'Total Conversions', 'ROAS': 'ROAS'},
+                     title=f'Spend vs Conversions (Size/Color = ROAS) for {tier_column}')
+    st.plotly_chart(fig, use_container_width=True)
 
-        # Scatter plot of Spend vs Conversions
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.scatterplot(data=campaign_data, x='Spend', y='RB Conv', size='ROAS', hue='ROAS', palette='viridis', ax=ax)
-        plt.title(f'Spend vs Conversions (Size/Color = ROAS) for {tier_column}')
-        st.pyplot(fig)
-
-
-    with col2:
-
-        # Bar plot of ROAS by Campaign
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sns.barplot(data=campaign_data.sort_values('ROAS', ascending=False).head(10), x=tier_column, y='ROAS', ax=ax)
-        plt.title(f'Top 10 Campaigns by ROAS for {tier_column}')
-        plt.xticks(rotation=90)
-        st.pyplot(fig)
+    # Bar plot of ROAS by Campaign
+    top_campaigns = campaign_data.sort_values('ROAS', ascending=False).head(10)
+    fig = px.bar(top_campaigns, x=tier_column, y='ROAS', color='Spend',
+                 labels={'ROAS': 'Return on Ad Spend', 'Spend': 'Total Spend ($)'},
+                 title=f'Top 10 Campaigns by ROAS for {tier_column}')
+    fig.update_xaxes(tickangle=45)
+    st.plotly_chart(fig, use_container_width=True)
 
     # Correlation heatmap
-    st.subheader('Metric Correlations')
     corr = campaign_data[['Spend', 'RB Conv', 'RB CPO', 'AOV', 'ROAS', 'CPA', 'Revenue']].corr()
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
-    plt.title(f'Correlation Heatmap of Metrics for {tier_column}')
-    st.pyplot(fig)
+    fig = px.imshow(corr, text_auto=True, aspect="auto",
+                    title=f'Correlation Heatmap of Metrics for {tier_column}')
+    st.plotly_chart(fig, use_container_width=True)
+
+    return campaign_data, corr
 
 # Tier 4 Analysis
 with tab1:
-    campaign_analysis(df, 'Tier 4')
+    tier4_data, tier4_corr = campaign_analysis(df, 'Tier 4')
 
 # Tier 5 Analysis
 with tab2:
-    campaign_analysis(df, 'Tier 5')
+    tier5_data, tier5_corr = campaign_analysis(df, 'Tier 5')
 
 # Time Series Analysis
 with tab3:
@@ -101,16 +100,16 @@ with tab3:
         'ROAS': 'mean'
     }).reset_index()
     
-    # Line plot for selected metrics over time
-    metrics = ['Spend', 'RB Conv', 'RB CPO', 'AOV', 'ROAS']
-    selected_metrics = st.multiselect('Select metrics for time series analysis', metrics, default=['Spend', 'ROAS'])
+    # Line plot for all metrics over time
+    fig = go.Figure()
     
-    fig, ax = plt.subplots(figsize=(12, 6))
-    for metric in selected_metrics:
-        sns.lineplot(data=time_df, x='Week', y=metric, label=metric, ax=ax)
-    plt.title('Metrics Over Time')
-    plt.legend()
-    st.pyplot(fig)
+    for metric in ['Spend', 'RB Conv', 'RB CPO', 'AOV', 'ROAS']:
+        fig.add_trace(go.Scatter(x=time_df['Week'], y=time_df[metric], name=metric, visible='legendonly' if metric != 'ROAS' else True))
+    
+    fig.update_layout(title_text='Metrics Over Time', height=600)
+    fig.update_xaxes(title_text='Week')
+    fig.update_yaxes(title_text='Value')
+    st.plotly_chart(fig, use_container_width=True)
     
     # Weekly performance table
     st.subheader('Weekly Performance')
@@ -120,34 +119,136 @@ with tab3:
         'RB CPO': '${:,.2f}',
         'AOV': '${:,.2f}',
         'ROAS': '{:,.2f}'
-    }),use_container_width=True)
+    }), use_container_width=True)
+
+
+    roas_series = time_df.set_index('Week')['ROAS']
+    # ARIMA forecast
+    st.subheader('ROAS Forecast')
+    model = ARIMA(roas_series, order=(1,1,1))
+    results = model.fit()
+    forecast = results.forecast(steps=4)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=roas_series.index, y=roas_series.values, name='Historical ROAS'))
+    fig.add_trace(go.Scatter(x=forecast.index, y=forecast.values, name='Forecasted ROAS', line=dict(dash='dash')))
+    fig.update_layout(title='ROAS Forecast for Next 4 Weeks', xaxis_title='Week', yaxis_title='ROAS')
+    st.plotly_chart(fig, use_container_width=True)
 
 # Insights and Recommendations
-st.header('Insights and Recommendations')
-st.write("""
-Based on the data analysis, here are some key insights and recommendations:
+with tab4:
+    st.header('Key Insights and Recommendations')
 
-1. Top-performing campaigns: Identify the campaigns with the highest ROAS in both Tier 4 and Tier 5. Consider allocating more budget to these high-performing campaigns.
+    # Tier 4 Insights
+    st.subheader('Tier 4 Campaign Insights')
+    top_tier4 = tier4_data.loc[tier4_data['ROAS'].idxmax()]
+    worst_tier4 = tier4_data.loc[tier4_data['ROAS'].idxmin()]
+    highest_spend_tier4 = tier4_data.loc[tier4_data['Spend'].idxmax()]
+    
+    st.write(f"""
+    1. Best Performing Tier 4 Campaign: '{top_tier4['Tier 4']}' 
+       - ROAS: {top_tier4['ROAS']:.2f}
+       - Revenue: ${top_tier4['Revenue']:,.2f}
+       - Spend: ${top_tier4['Spend']:,.2f}
+    
+    2. Underperforming Tier 4 Campaign: '{worst_tier4['Tier 4']}'
+       - ROAS: {worst_tier4['ROAS']:.2f}
+       - Revenue: ${worst_tier4['Revenue']:,.2f}
+       - Spend: ${worst_tier4['Spend']:,.2f}
+    
+    3. Highest Spend Tier 4 Campaign: '{highest_spend_tier4['Tier 4']}'
+       - Spend: ${highest_spend_tier4['Spend']:,.2f}
+       - ROAS: {highest_spend_tier4['ROAS']:.2f}
+       - Revenue: ${highest_spend_tier4['Revenue']:,.2f}
+    
+    4. Tier 4 Metric Correlations:
+       - Spend vs. Conversions: {tier4_corr.loc['Spend', 'RB Conv']:.2f}
+       - ROAS vs. Spend: {tier4_corr.loc['ROAS', 'Spend']:.2f}
+    """)
 
-2. Spend efficiency: Analyze the relationship between spend and conversions. Look for campaigns that have a good balance of high spend and high conversions.
+    # Tier 5 Insights
+    st.subheader('Tier 5 Campaign Insights')
+    top_tier5 = tier5_data.loc[tier5_data['ROAS'].idxmax()]
+    worst_tier5 = tier5_data.loc[tier5_data['ROAS'].idxmin()]
+    highest_spend_tier5 = tier5_data.loc[tier5_data['Spend'].idxmax()]
+    
+    st.write(f"""
+    1. Best Performing Tier 5 Campaign: '{top_tier5['Tier 5']}' 
+       - ROAS: {top_tier5['ROAS']:.2f}
+       - Revenue: ${top_tier5['Revenue']:,.2f}
+       - Spend: ${top_tier5['Spend']:,.2f}
+    
+    2. Underperforming Tier 5 Campaign: '{worst_tier5['Tier 5']}'
+       - ROAS: {worst_tier5['ROAS']:.2f}
+       - Revenue: ${worst_tier5['Revenue']:,.2f}
+       - Spend: ${worst_tier5['Spend']:,.2f}
+    
+    3. Highest Spend Tier 5 Campaign: '{highest_spend_tier5['Tier 5']}'
+       - Spend: ${highest_spend_tier5['Spend']:,.2f}
+       - ROAS: {highest_spend_tier5['ROAS']:.2f}
+       - Revenue: ${highest_spend_tier5['Revenue']:,.2f}
+    
+    4. Tier 5 Metric Correlations:
+       - Spend vs. Conversions: {tier5_corr.loc['Spend', 'RB Conv']:.2f}
+       - ROAS vs. Spend: {tier5_corr.loc['ROAS', 'Spend']:.2f}
+    """)
 
-3. Optimize underperforming campaigns: Identify campaigns with low ROAS and high CPA. Consider adjusting or pausing these campaigns to improve overall performance.
+    # Time Series Insights
+    st.subheader('Time Series Insights')
+    best_week = time_df.loc[time_df['ROAS'].idxmax()]
+    worst_week = time_df.loc[time_df['ROAS'].idxmin()]
+    spend_trend = 'increasing' if time_df['Spend'].iloc[-1] > time_df['Spend'].iloc[0] else 'decreasing'
+    roas_trend = 'improving' if time_df['ROAS'].iloc[-1] > time_df['ROAS'].iloc[0] else 'declining'
+    
+    st.write(f"""
+    1. Best Performing Week: {best_week['Week'].date()}
+       - ROAS: {best_week['ROAS']:.2f}
+       - Spend: ${best_week['Spend']:,.2f}
+       - Conversions: {best_week['RB Conv']:.0f}
+    
+    2. Worst Performing Week: {worst_week['Week'].date()}
+       - ROAS: {worst_week['ROAS']:.2f}
+       - Spend: ${worst_week['Spend']:,.2f}
+       - Conversions: {worst_week['RB Conv']:.0f}
+    
+    3. Overall Trends:
+       - Spend is {spend_trend} over time
+       - ROAS is {roas_trend} over the analyzed period
 
-4. Scaling opportunities: Look for campaigns with high ROAS but relatively low spend. These might be opportunities to scale up and increase overall revenue.
+           
+    4. Forecast: The ARIMA model predicts a {'rising' if forecast.values[-1] > roas_series.iloc[-1] else 'falling'} trend in ROAS for the next 4 weeks.
+    """)
 
-5. Time-based trends: Use the time series analysis to identify any seasonal trends or patterns in performance. This can inform future campaign planning and budget allocation.
+    st.subheader('Recommendations')
+    st.write("""
+    Based on the comprehensive data analysis, here are key recommendations:
 
-6. Metric relationships: Use the correlation heatmaps to understand relationships between different metrics. This can help in identifying key drivers of performance.
+    1. Campaign Optimization:
+       - Focus resources on top-performing campaigns in both Tier 4 and Tier 5.
+       - Review and optimize or pause the lowest-performing campaigns, especially those with high spend and low ROAS.
 
-7. Campaign structure: Compare the performance of Tier 4 vs Tier 5 campaigns. This might provide insights into which level of campaign granularity is more effective.
+    2. Budget Allocation:
+       - Redistribute budget from underperforming campaigns to those showing high ROAS and potential for scaling.
+       - Consider increasing overall spend if there's a positive correlation between spend and ROAS.
 
-8. Revenue focus: While ROAS is important, also pay attention to total revenue generated. Some campaigns might have slightly lower ROAS but generate significantly more revenue.
+    3. Performance Metrics:
+       - Monitor the relationship between CPA and ROAS closely. Prioritize campaigns with low CPA and high ROAS for increased investment.
+       - Pay attention to AOV and its impact on overall revenue. Campaigns driving higher AOV might be more valuable even with slightly lower conversion rates.
 
-9. Testing and iteration: For underperforming campaigns, consider A/B testing different ad creatives, targeting options, or bidding strategies to improve their performance.
+    4. Seasonal Strategy:
+       - Align campaign efforts with identified peak performance periods from the time series analysis.
+       - Prepare and allocate resources for historically high-performing weeks or seasons.
 
-10. Budget allocation: Based on the performance data, reassess your budget allocation across campaigns to maximize overall ROAS and revenue.
-""")
+    5. Forecasting and Trend Analysis:
+       - Use the ARIMA forecast to guide short-term strategy. Adjust budget and campaign focus based on the predicted ROAS trend.
+       - Regularly update the forecast model with new data to improve accuracy.
 
-# Footer
-st.sidebar.markdown('---')
-st.sidebar.write('Dashboard created with Streamlit')
+    6. Testing and Innovation:
+       - Implement A/B testing for ad creatives, targeting options, and bidding strategies, especially for mid-performing campaigns with potential for improvement.
+       - Explore new ad formats or platforms that align with high-performing campaign characteristics.
+
+    7. Conversion Rate Optimization:
+       - For campaigns with high spend but lower conversion rates, review and optimize landing pages and user experience to improve conversion rates.
+         - Implement retargeting strategies to capture missed conversions and improve overall campaign performance.
+             """)
+    
